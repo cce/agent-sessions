@@ -1,12 +1,16 @@
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::session::{get_sessions, SessionsResponse};
 use crate::terminal;
 
 // Store current shortcut for unregistration
 static CURRENT_SHORTCUT: Mutex<Option<Shortcut>> = Mutex::new(None);
+
+// Setting: ignore CPU usage when determining session status
+pub static IGNORE_CPU_FOR_STATUS: AtomicBool = AtomicBool::new(false);
 
 /// Get all active Claude Code sessions
 #[tauri::command]
@@ -111,4 +115,16 @@ pub fn kill_session(pid: u32) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Failed to kill process {}: {}", pid, stderr))
     }
+}
+
+/// Get the current value of the "ignore CPU for status" setting
+#[tauri::command]
+pub fn get_ignore_cpu_setting() -> bool {
+    IGNORE_CPU_FOR_STATUS.load(Ordering::Relaxed)
+}
+
+/// Set the "ignore CPU for status" setting
+#[tauri::command]
+pub fn set_ignore_cpu_setting(value: bool) {
+    IGNORE_CPU_FOR_STATUS.store(value, Ordering::Relaxed);
 }

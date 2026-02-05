@@ -15,6 +15,7 @@ interface SettingsProps {
 }
 
 const STORAGE_KEY = 'claude-sessions-hotkey';
+const IGNORE_CPU_KEY = 'claude-sessions-ignore-cpu';
 const DEFAULT_HOTKEY = 'Control+Space';
 
 export function Settings({ isOpen, onClose }: SettingsProps) {
@@ -23,12 +24,20 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
   const [recordedKeys, setRecordedKeys] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [ignoreCpu, setIgnoreCpu] = useState(false);
 
-  // Load saved hotkey on mount
+  // Load saved settings on mount
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      setHotkey(saved);
+    const savedHotkey = localStorage.getItem(STORAGE_KEY);
+    if (savedHotkey) {
+      setHotkey(savedHotkey);
+    }
+
+    // Load and sync ignore CPU setting
+    const savedIgnoreCpu = localStorage.getItem(IGNORE_CPU_KEY);
+    if (savedIgnoreCpu === 'true') {
+      setIgnoreCpu(true);
+      invoke('set_ignore_cpu_setting', { value: true }).catch(console.error);
     }
   }, []);
 
@@ -158,6 +167,34 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
               Hotkey saved
             </div>
           )}
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-sm font-medium text-foreground">
+            Status Detection
+          </label>
+          <div
+            className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/50 cursor-pointer hover:border-muted-foreground/50"
+            onClick={async () => {
+              const newValue = !ignoreCpu;
+              setIgnoreCpu(newValue);
+              try {
+                await invoke('set_ignore_cpu_setting', { value: newValue });
+                localStorage.setItem(IGNORE_CPU_KEY, String(newValue));
+              } catch (err) {
+                console.error('Failed to save ignore CPU setting:', err);
+                setIgnoreCpu(!newValue); // Revert on error
+              }
+            }}
+          >
+            <span className="text-sm text-foreground">Ignore CPU usage</span>
+            <div className={`w-10 h-6 rounded-full transition-colors ${ignoreCpu ? 'bg-emerald-500' : 'bg-muted-foreground/30'}`}>
+              <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${ignoreCpu ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Claude processes can show high CPU even when idle. Enable this to rely only on message analysis for status.
+          </p>
         </div>
 
         <DialogFooter>

@@ -463,8 +463,9 @@ fn find_session_for_process(
     }
 
     // Additional check: if CPU usage is high, the process is likely working
-    // Override Waiting status if CPU > 5%
-    if matches!(session.status, SessionStatus::Waiting) && process.cpu_usage > 5.0 {
+    // Override Waiting status if CPU > 5% (unless user disabled this heuristic)
+    let ignore_cpu = crate::commands::IGNORE_CPU_FOR_STATUS.load(std::sync::atomic::Ordering::Relaxed);
+    if !ignore_cpu && matches!(session.status, SessionStatus::Waiting) && process.cpu_usage > 5.0 {
         debug!(
             "Process has high CPU ({:.1}%), overriding Waiting -> Processing",
             process.cpu_usage
