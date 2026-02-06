@@ -1,5 +1,6 @@
 use super::{AgentDetector, AgentProcess};
 use crate::session::{AgentType, Session, SessionStatus};
+use crate::terminal::get_tty_for_pid;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -325,6 +326,7 @@ fn get_latest_session_for_project(
         pid: process.pid,
         cpu_usage: process.cpu_usage,
         active_subagent_count: 0,
+        tty: get_tty_for_pid(process.pid).ok(),
     })
 }
 
@@ -512,5 +514,6 @@ fn get_global_session_for_directory(
         pid: process.pid,
         cpu_usage: process.cpu_usage,
         active_subagent_count: 0,
+        tty: get_tty_for_pid(process.pid).ok(),
     })
 }

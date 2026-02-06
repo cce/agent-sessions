@@ -26,6 +26,8 @@ pub struct Session {
     pub pid: u32,
     pub cpu_usage: f32,
     pub active_subagent_count: usize,
+    /// TTY device for this session (e.g., "ttys042")
+    pub tty: Option<String>,
 }
 
 /// Status of a Claude Code session

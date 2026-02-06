@@ -1,0 +1,102 @@
+// Minimal iTerm2 API protobuf definitions for session listing
+// Based on https://gitlab.com/gnachman/iterm2/-/blob/master/proto/api.proto
+
+syntax = "proto2";
+
+package iterm2;
+
+// Top-level message sent from client to iTerm2
+message ClientOriginatedMessage {
+    optional int64 id = 1;
+    oneof submessage {
+        ListSessionsRequest list_sessions_request = 106;
+        VariableRequest variable_request = 115;
+    }
+}
+
+// Top-level message sent from iTerm2 to client
+message ServerOriginatedMessage {
+    optional int64 id = 1;
+    oneof submessage {
+        string error = 2;
+        ListSessionsResponse list_sessions_response = 106;
+        VariableResponse variable_response = 115;
+        Notification notification = 1000;
+    }
+}
+
+// Request to list all sessions
+message ListSessionsRequest {
+}
+
+// Response containing window/tab/session hierarchy
+message ListSessionsResponse {
+    repeated Window windows = 1;
+}
+
+// A window in iTerm2
+message Window {
+    repeated Tab tabs = 1;
+    optional string window_id = 2;
+    // frame is field 3 but we skip it
+}
+
+// A tab within a window (matches actual iTerm2 proto field numbers)
+message Tab {
+    optional string tab_id = 2;
+    optional SplitTreeNode root = 3;
+}
+
+// Tree structure for split panes - matches actual iTerm2 proto structure
+message SplitTreeNode {
+    optional bool vertical = 1;
+    repeated SplitTreeLink links = 2;
+    // Note: actual proto has children at 2, links at 2 as well via nested SplitTreeLink
+}
+
+// Link in split tree - contains either a session or nested node
+message SplitTreeLink {
+    oneof child {
+        SessionSummary session = 1;
+        SplitTreeNode node = 2;
+    }
+}
+
+// Summary information about a session (matches actual iTerm2 proto)
+message SessionSummary {
+    optional string unique_identifier = 1;
+    // frame is field 2 - we skip it to avoid parsing issues
+    // grid_size is field 3 - we skip it
+    optional string title = 4;
+}
+
+// Notification message (we ignore these but need to parse them)
+message Notification {
+    // We don't need the details, just need to recognize the message type
+}
+
+// Variable request - to get session.tty
+message VariableRequest {
+    oneof scope {
+        string session_id = 1;
+        string tab_id = 4;
+        bool app = 5;
+        string window_id = 6;
+    }
+    repeated string get = 3;
+}
+
+// Variable response
+message VariableResponse {
+    enum Status {
+        OK = 0;
+        SESSION_NOT_FOUND = 1;
+        INVALID_NAME = 2;
+        MISSING_SCOPE = 3;
+        TAB_NOT_FOUND = 4;
+        MULTI_GET_DISALLOWED = 5;
+        WINDOW_NOT_FOUND = 6;
+    }
+    optional Status status = 1;
+    repeated string values = 2;  // 1:1 with get field in request, JSON encoded
+}

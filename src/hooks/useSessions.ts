@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Session, SessionsResponse } from '../types/session';
+import { Session, SessionsResponse, ItermLayoutResponse } from '../types/session';
 
 const POLL_INTERVAL = 2000; // 2 seconds
 
@@ -83,6 +83,11 @@ export function useSessions() {
   const [error, setError] = useState<string | null>(null);
   const sessionsRef = useRef<Session[]>([]);
 
+  // Window grouping state
+  const [groupByWindow, setGroupByWindow] = useState(false);
+  const [itermLayout, setItermLayout] = useState<ItermLayoutResponse | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+
   const updateTrayTitle = useCallback(async (total: number, waiting: number) => {
     try {
       await invoke('update_tray_title', { total, waiting });
@@ -133,6 +138,34 @@ export function useSessions() {
     return () => clearInterval(interval);
   }, [fetchSessions]);
 
+  // Fetch iTerm2 layout when grouping is enabled
+  const fetchItermLayout = useCallback(async () => {
+    try {
+      const layout = await invoke<ItermLayoutResponse>('get_iterm_layout');
+      setItermLayout(layout);
+      setLayoutError(null);
+    } catch (err) {
+      console.error('Failed to fetch iTerm2 layout:', err);
+      // Extract actual error message from Tauri error object
+      const errorMsg = typeof err === 'string' ? err :
+        (err instanceof Error ? err.message : JSON.stringify(err));
+      setLayoutError(errorMsg || 'Failed to fetch iTerm2 layout');
+      setItermLayout(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (groupByWindow) {
+      fetchItermLayout();
+      // Poll layout at same interval as sessions
+      const interval = setInterval(fetchItermLayout, POLL_INTERVAL);
+      return () => clearInterval(interval);
+    } else {
+      setItermLayout(null);
+      setLayoutError(null);
+    }
+  }, [groupByWindow, fetchItermLayout]);
+
   return {
     sessions,
     totalCount,
@@ -141,5 +174,9 @@ export function useSessions() {
     error,
     refresh: fetchSessions,
     focusSession,
+    groupByWindow,
+    setGroupByWindow,
+    itermLayout,
+    layoutError,
   };
 }
