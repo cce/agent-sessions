@@ -1,9 +1,12 @@
 mod applescript;
 mod iterm;
+pub mod iterm_api;
 mod terminal_app;
 mod tmux;
 
 use applescript::execute_applescript;
+
+pub use iterm_api::{get_iterm_layout, ItermLayoutResponse};
 
 /// Focus the terminal containing the Claude process with the given PID
 pub fn focus_terminal_for_pid(pid: u32) -> Result<(), String> {
@@ -54,7 +57,7 @@ pub fn focus_terminal_by_path(path: &str) -> Result<(), String> {
 }
 
 /// Get the TTY device for a given PID using ps command
-fn get_tty_for_pid(pid: u32) -> Result<String, String> {
+pub fn get_tty_for_pid(pid: u32) -> Result<String, String> {
     use std::process::Command;
 
     let output = Command::new("ps")

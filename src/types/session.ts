@@ -16,10 +16,33 @@ export interface Session {
   pid: number;
   cpuUsage: number;
   activeSubagentCount: number;
+  tty: string | null;
 }
 
 export interface SessionsResponse {
   sessions: Session[];
   totalCount: number;
   waitingCount: number;
+}
+
+// iTerm2 layout types for window grouping
+export interface ItermSessionInfo {
+  sessionId: string;
+  tty: string;
+  name: string;
+}
+
+export interface ItermTab {
+  tabId: string;
+  sessions: ItermSessionInfo[];
+}
+
+export interface ItermWindow {
+  windowId: string;
+  tabs: ItermTab[];
+}
+
+export interface ItermLayoutResponse {
+  windows: ItermWindow[];
+  sessionToWindow: Record<string, string>;
 }

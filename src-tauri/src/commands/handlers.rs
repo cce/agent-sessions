@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use crate::session::{get_sessions, SessionsResponse};
 use crate::terminal;
+use crate::terminal::ItermLayoutResponse;
 
 // Store current shortcut for unregistration
 static CURRENT_SHORTCUT: Mutex<Option<Shortcut>> = Mutex::new(None);
@@ -111,4 +112,13 @@ pub fn kill_session(pid: u32) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Failed to kill process {}: {}", pid, stderr))
     }
+}
+
+/// Get iTerm2 window/tab/session layout for grouping sessions by window
+#[tauri::command]
+pub fn get_iterm_layout() -> Result<ItermLayoutResponse, String> {
+    eprintln!("[Handler] get_iterm_layout called");
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("Failed to create runtime: {}", e))?;
+    rt.block_on(terminal::get_iterm_layout())
 }

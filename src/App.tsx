@@ -15,6 +15,10 @@ function App() {
     error,
     refresh,
     focusSession,
+    groupByWindow,
+    setGroupByWindow,
+    itermLayout,
+    layoutError,
   } = useSessions();
 
   // Initialize hotkey on app start
@@ -43,6 +47,16 @@ function App() {
           )}
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant={groupByWindow ? (layoutError ? "destructive" : "secondary") : "ghost"}
+            size="icon-sm"
+            onClick={() => setGroupByWindow(!groupByWindow)}
+            title={layoutError ? `Error: ${layoutError}` : (groupByWindow ? "Disable window grouping" : "Group by iTerm2 window")}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+            </svg>
+          </Button>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -81,6 +95,14 @@ function App() {
       {/* Settings Modal */}
       <Settings isOpen={showSettings} onClose={() => setShowSettings(false)} />
 
+      {/* iTerm2 layout error banner */}
+      {groupByWindow && layoutError && (
+        <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-destructive text-xs">
+          <span className="font-medium">iTerm2 grouping error:</span> {layoutError}
+          <span className="ml-2 opacity-70">(Enable Python API in iTerm2 Settings → General → Magic)</span>
+        </div>
+      )}
+
       {/* Main content area */}
       <main className="flex-1 overflow-y-auto p-6">
         {error ? (
@@ -108,6 +130,8 @@ function App() {
           <SessionGrid
             sessions={sessions}
             onSessionClick={focusSession}
+            groupByWindow={groupByWindow}
+            itermLayout={itermLayout}
           />
         )}
       </main>

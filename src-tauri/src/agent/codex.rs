@@ -1,6 +1,7 @@
 use super::{AgentDetector, AgentProcess};
 use crate::process::find_codex_processes;
 use crate::session::{get_github_url, AgentType, Session, SessionStatus};
+use crate::terminal::get_tty_for_pid;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
@@ -364,6 +365,7 @@ fn parse_session_file(
         pid: process.pid,
         cpu_usage: process.cpu_usage,
         active_subagent_count: 0,
+        tty: get_tty_for_pid(process.pid).ok(),
     })
 }
 

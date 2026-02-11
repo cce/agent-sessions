@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
 use crate::agent::AgentProcess;
+use crate::terminal::get_tty_for_pid;
 use super::model::{AgentType, Session, SessionStatus, SessionsResponse, JsonlMessage};
 use super::status::{determine_status, has_tool_use, has_tool_result, is_local_slash_command, is_interrupted_request};
 
@@ -623,6 +624,9 @@ pub fn parse_session_file(
     // Get GitHub URL from git remote
     let github_url = get_github_url(project_path);
 
+    // Get TTY for this process (for iTerm2 window grouping)
+    let tty = get_tty_for_pid(pid).ok();
+
     Some(Session {
         id: session_id,
         agent_type,
@@ -637,5 +641,6 @@ pub fn parse_session_file(
         pid,
         cpu_usage,
         active_subagent_count: 0, // Set by find_session_for_process
+        tty,
     })
 }
