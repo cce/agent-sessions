@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.25] - 2026-02-08
+
+### Fixed
+- Fix status flickering when multiple sessions run in the same project - idle sessions no longer pick up active status from sibling sessions
+
 ## [0.1.24] - 2026-02-06
 
 ### Added

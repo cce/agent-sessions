@@ -438,7 +438,7 @@ fn find_session_for_process(
     // Count active subagents for this session
     session.active_subagent_count = count_active_subagents(project_dir, &session.id);
 
-Some(session)
+    Some(session)
 }
 
 /// Parse a JSONL session file and create a Session struct
