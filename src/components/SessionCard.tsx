@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Session } from '../types/session';
+import { useState, useEffect, useRef } from 'react';
+import { Session, DisplaySettings, DisplayItemKey } from '../types/session';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -57,9 +57,92 @@ const AgentStatusIcon = ({ type, statusColor }: { type: 'claude' | 'opencode' | 
   return <OpenCodeIcon className={`w-4 h-4 ${statusColor}`} />;
 };
 
+// Hold the last non-zero CPU value for a few seconds before hiding,
+// so the indicator doesn't flicker on transient dips between poll samples.
+function useSmoothedCpu(cpuUsage: number): number {
+  const [displayCpu, setDisplayCpu] = useState(cpuUsage);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    if (cpuUsage >= 1) {
+      clearTimeout(hideTimerRef.current);
+      setDisplayCpu(cpuUsage);
+    } else {
+      hideTimerRef.current = setTimeout(() => setDisplayCpu(0), 4000);
+    }
+    return () => clearTimeout(hideTimerRef.current);
+  }, [cpuUsage]);
+
+  return displayCpu;
+}
+
+const CpuIndicator = ({ cpu }: { cpu: number }) => {
+  const colorClass = cpu >= 85 ? 'text-red-400' : cpu >= 50 ? 'text-amber-400' : 'text-muted-foreground';
+
+  const bars = [
+    { threshold: 0, height: 3, y: 9 },
+    { threshold: 25, height: 6, y: 6 },
+    { threshold: 50, height: 9, y: 3 },
+    { threshold: 75, height: 12, y: 0 },
+  ];
+
+  return (
+    <span className={`flex items-center gap-1 ${colorClass}`}>
+      <svg viewBox="0 0 15 12" className="w-3 h-2.5">
+        {bars.map((bar, i) => (
+          <rect
+            key={i}
+            x={i * 4}
+            y={bar.y}
+            width={3}
+            height={bar.height}
+            fill="currentColor"
+            opacity={cpu > bar.threshold ? 1 : 0.2}
+          />
+        ))}
+      </svg>
+      {cpu >= 50 && (
+        <span className="text-xs">{Math.round(cpu)}%</span>
+      )}
+    </span>
+  );
+};
+
+const ITEM_RENDERERS: Record<DisplayItemKey, (session: Session, smoothedCpu: number) => React.ReactNode | null> = {
+  pid: (session) => (
+    <span className="text-[10px] text-muted-foreground font-mono">{session.pid}</span>
+  ),
+  tty: (session) => session.tty ? (
+    <span className="text-[10px] text-muted-foreground font-mono">{session.tty.replace('/dev/', '')}</span>
+  ) : null,
+  cpu: (_session, smoothedCpu) => smoothedCpu >= 1 ? (
+    <CpuIndicator cpu={smoothedCpu} />
+  ) : null,
+  time: (s) => (
+    <span className="text-xs text-muted-foreground">{formatTimeAgo(s.lastActivityAt)}</span>
+  ),
+};
+
+const DOT_SEPARATOR = <span className="text-xs text-muted-foreground">&middot;</span>;
+
+const FooterDetails = ({ session, displaySettings, smoothedCpu }: { session: Session; displaySettings: DisplaySettings; smoothedCpu: number }) => {
+  const elements: React.ReactNode[] = [];
+  for (const item of displaySettings) {
+    if (!item.enabled) continue;
+    const rendered = ITEM_RENDERERS[item.key](session, smoothedCpu);
+    if (rendered === null) continue;
+    if (elements.length > 0) {
+      elements.push(<span key={`sep-${item.key}`}>{DOT_SEPARATOR}</span>);
+    }
+    elements.push(<span key={item.key}>{rendered}</span>);
+  }
+  return <div className="flex items-center gap-1.5">{elements}</div>;
+};
+
 interface SessionCardProps {
   session: Session;
   onClick: () => void;
+  displaySettings: DisplaySettings;
 }
 
 // Helper to get/set custom data from localStorage
@@ -104,8 +187,9 @@ function setCustomUrl(sessionId: string, url: string) {
   localStorage.setItem(CUSTOM_URLS_KEY, JSON.stringify(urls));
 }
 
-export function SessionCard({ session, onClick }: SessionCardProps) {
+export function SessionCard({ session, onClick, displaySettings }: SessionCardProps) {
   const config = statusConfig[session.status];
+  const smoothedCpu = useSmoothedCpu(session.cpuUsage);
   const [customName, setCustomNameState] = useState<string>('');
   const [customUrl, setCustomUrlState] = useState<string>('');
   const [isRenameOpen, setIsRenameOpen] = useState(false);
@@ -349,9 +433,7 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
                 </span>
               )}
             </div>
-            <span className="text-xs text-muted-foreground">
-              {formatTimeAgo(session.lastActivityAt)}
-            </span>
+            <FooterDetails session={session} displaySettings={displaySettings} smoothedCpu={smoothedCpu} />
           </div>
         </CardContent>
       </Card>

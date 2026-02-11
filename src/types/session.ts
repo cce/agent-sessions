@@ -19,6 +19,15 @@ export interface Session {
   tty: string | null;
 }
 
+export type DisplayItemKey = 'pid' | 'tty' | 'cpu' | 'time';
+
+export interface DisplayItem {
+  key: DisplayItemKey;
+  enabled: boolean;
+}
+
+export type DisplaySettings = DisplayItem[];
+
 export interface SessionsResponse {
   sessions: Session[];
   totalCount: number;

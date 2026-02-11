@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Dialog,
@@ -8,16 +8,99 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { DisplaySettings, DisplayItemKey } from '../types/session';
 
 interface SettingsProps {
   isOpen: boolean;
   onClose: () => void;
+  displaySettings: DisplaySettings;
+  onDisplaySettingsChange: (settings: DisplaySettings) => void;
 }
 
 const STORAGE_KEY = 'claude-sessions-hotkey';
 const DEFAULT_HOTKEY = 'Control+Space';
 
-export function Settings({ isOpen, onClose }: SettingsProps) {
+const DISPLAY_LABELS: Record<DisplayItemKey, string> = {
+  pid: 'PID',
+  tty: 'TTY',
+  cpu: 'CPU usage',
+  time: 'Last updated',
+};
+
+function DisplayItemList({
+  items,
+  onChange,
+}: {
+  items: DisplaySettings;
+  onChange: (items: DisplaySettings) => void;
+}) {
+  const dragItem = useRef<number | null>(null);
+  const dragOverItem = useRef<number | null>(null);
+
+  const handleDragStart = (index: number) => {
+    dragItem.current = index;
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    dragOverItem.current = index;
+  };
+
+  const handleDrop = () => {
+    if (dragItem.current === null || dragOverItem.current === null) return;
+    if (dragItem.current === dragOverItem.current) return;
+    const reordered = [...items];
+    const [moved] = reordered.splice(dragItem.current, 1);
+    reordered.splice(dragOverItem.current, 0, moved);
+    dragItem.current = null;
+    dragOverItem.current = null;
+    onChange(reordered);
+  };
+
+  const toggleItem = (index: number) => {
+    const updated = items.map((item, i) =>
+      i === index ? { ...item, enabled: !item.enabled } : item
+    );
+    onChange(updated);
+  };
+
+  return (
+    <div className="space-y-2">
+      <label className="text-sm font-medium text-foreground">
+        Session Card Details
+      </label>
+      <div className="space-y-1">
+        {items.map((item, index) => (
+          <div
+            key={item.key}
+            draggable
+            onDragStart={() => handleDragStart(index)}
+            onDragOver={(e) => handleDragOver(e, index)}
+            onDrop={handleDrop}
+            className="flex items-center gap-2 p-1.5 rounded cursor-grab active:cursor-grabbing hover:bg-muted/50 select-none"
+          >
+            <svg className="w-3.5 h-3.5 text-muted-foreground shrink-0" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="5" cy="3" r="1.5" />
+              <circle cx="11" cy="3" r="1.5" />
+              <circle cx="5" cy="8" r="1.5" />
+              <circle cx="11" cy="8" r="1.5" />
+              <circle cx="5" cy="13" r="1.5" />
+              <circle cx="11" cy="13" r="1.5" />
+            </svg>
+            <Checkbox
+              checked={item.enabled}
+              onCheckedChange={() => toggleItem(index)}
+            />
+            <span className="text-sm text-foreground">{DISPLAY_LABELS[item.key]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function Settings({ isOpen, onClose, displaySettings, onDisplaySettingsChange }: SettingsProps) {
   const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedKeys, setRecordedKeys] = useState<string[]>([]);
@@ -159,6 +242,11 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
             </div>
           )}
         </div>
+
+        <DisplayItemList
+          items={displaySettings}
+          onChange={onDisplaySettingsChange}
+        />
 
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={handleClear}>
