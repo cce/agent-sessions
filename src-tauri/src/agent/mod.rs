@@ -10,6 +10,8 @@ pub struct AgentProcess {
     pub pid: u32,
     pub cpu_usage: f32,
     pub cwd: Option<std::path::PathBuf>,
+    /// Session ID extracted from command line args (e.g. --resume <id>)
+    pub session_id: Option<String>,
 }
 
 /// Trait for detecting and parsing agent sessions

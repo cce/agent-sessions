@@ -20,8 +20,13 @@ function loadDisplaySettings(): DisplaySettings {
   try {
     const stored = localStorage.getItem(DISPLAY_SETTINGS_KEY);
     if (!stored) return DEFAULT_DISPLAY;
-    const parsed = JSON.parse(stored) as DisplaySettings;
-    if (!Array.isArray(parsed)) return DEFAULT_DISPLAY;
+    const raw = JSON.parse(stored);
+    if (!Array.isArray(raw)) return DEFAULT_DISPLAY;
+    const validKeys = new Set<string>(ALL_KEYS);
+    const parsed: DisplaySettings = raw.filter(
+      (item): item is DisplaySettings[number] =>
+        item && typeof item.key === 'string' && validKeys.has(item.key) && typeof item.enabled === 'boolean'
+    );
     // Ensure all keys are present (handles upgrades when new items are added)
     const existing = new Set(parsed.map((item) => item.key));
     for (const key of ALL_KEYS) {

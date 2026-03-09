@@ -11,6 +11,8 @@ pub struct ClaudeProcess {
     pub cwd: Option<PathBuf>,
     pub cpu_usage: f32,
     pub memory: u64,
+    /// Session ID extracted from --resume <id> arg, if present
+    pub session_id: Option<String>,
 }
 
 // Reuse System instance to avoid expensive re-initialization
@@ -172,10 +174,24 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
                 continue;
             }
 
+            // Extract session ID from --resume <uuid> arg
+            let session_id = cmd.windows(2).find_map(|pair| {
+                let flag = pair[0].to_string_lossy();
+                if flag == "--resume" || flag == "-r" {
+                    let val = pair[1].to_string_lossy().to_string();
+                    // Only accept UUID-shaped values (not flags like --something)
+                    if !val.starts_with('-') && val.len() > 8 {
+                        return Some(val);
+                    }
+                }
+                None
+            });
+
             debug!(
-                "Found Claude process: pid={}, cwd={:?}, cpu={:.1}%, mem={}MB",
+                "Found Claude process: pid={}, cwd={:?}, session_id={:?}, cpu={:.1}%, mem={}MB",
                 pid.as_u32(),
                 cwd,
+                session_id,
                 process.cpu_usage(),
                 process.memory() / 1024 / 1024
             );
@@ -185,6 +201,7 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
                 cwd,
                 cpu_usage: process.cpu_usage(),
                 memory: process.memory(),
+                session_id,
             });
         }
     }

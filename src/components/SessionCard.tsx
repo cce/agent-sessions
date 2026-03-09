@@ -66,12 +66,22 @@ function useSmoothedCpu(cpuUsage: number): number {
   useEffect(() => {
     if (cpuUsage >= 1) {
       clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = undefined;
       setDisplayCpu(cpuUsage);
-    } else {
-      hideTimerRef.current = setTimeout(() => setDisplayCpu(0), 4000);
+    } else if (!hideTimerRef.current) {
+      // Only start the hide timer once per drop below threshold;
+      // no cleanup on re-renders so the timer runs to completion
+      // rather than being cancelled and leaving a stale ref.
+      hideTimerRef.current = setTimeout(() => {
+        setDisplayCpu(0);
+        hideTimerRef.current = undefined;
+      }, 4000);
     }
-    return () => clearTimeout(hideTimerRef.current);
   }, [cpuUsage]);
+
+  useEffect(() => {
+    return () => clearTimeout(hideTimerRef.current);
+  }, []);
 
   return displayCpu;
 }
@@ -129,7 +139,9 @@ const FooterDetails = ({ session, displaySettings, smoothedCpu }: { session: Ses
   const elements: React.ReactNode[] = [];
   for (const item of displaySettings) {
     if (!item.enabled) continue;
-    const rendered = ITEM_RENDERERS[item.key](session, smoothedCpu);
+    const renderer = ITEM_RENDERERS[item.key];
+    if (!renderer) continue;
+    const rendered = renderer(session, smoothedCpu);
     if (rendered === null) continue;
     if (elements.length > 0) {
       elements.push(<span key={`sep-${item.key}`}>{DOT_SEPARATOR}</span>);
