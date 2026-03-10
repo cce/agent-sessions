@@ -21,7 +21,6 @@ impl AgentDetector for ClaudeDetector {
                 pid: p.pid,
                 cpu_usage: p.cpu_usage,
                 cwd: p.cwd,
-                session_id: p.session_id,
             })
             .collect()
     }

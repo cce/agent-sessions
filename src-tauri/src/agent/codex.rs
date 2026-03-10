@@ -27,7 +27,6 @@ impl AgentDetector for CodexDetector {
                 pid: p.pid,
                 cpu_usage: p.cpu_usage,
                 cwd: p.cwd,
-                session_id: None,
             })
             .collect()
     }

@@ -247,111 +247,87 @@ pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) 
 
     let mut sessions = Vec::new();
 
+    // Build a map of cwd -> list of processes (multiple sessions can run in same folder)
+    let mut cwd_to_processes: HashMap<String, Vec<&AgentProcess>> = HashMap::new();
+    for process in processes {
+        if let Some(cwd) = &process.cwd {
+            let cwd_str = cwd.to_string_lossy().to_string();
+            debug!("Mapping process pid={} to cwd={}", process.pid, cwd_str);
+            cwd_to_processes.entry(cwd_str).or_default().push(process);
+        } else {
+            warn!("Process pid={} has no cwd, skipping", process.pid);
+        }
+    }
+
+    // Scan ~/.claude/projects for session files
     let claude_dir = dirs::home_dir()
         .map(|h| h.join(".claude").join("projects"))
         .unwrap_or_default();
+
+    debug!("Claude projects directory: {:?}", claude_dir);
 
     if !claude_dir.exists() {
         warn!("Claude projects directory does not exist: {:?}", claude_dir);
         return sessions;
     }
 
-    // Partition processes: those with a known session_id (from --resume <id>)
-    // can be matched directly to their JSONL file without any guessing.
-    let mut resolved: Vec<(&AgentProcess, PathBuf)> = Vec::new();
-    let mut unresolved: Vec<&AgentProcess> = Vec::new();
-
-    for process in processes {
-        if let Some(sid) = &process.session_id {
-            // Find the JSONL file for this session ID across all project dirs
-            let jsonl_name = format!("{}.jsonl", sid);
-            let found = fs::read_dir(&claude_dir).ok().and_then(|entries| {
-                for entry in entries.flatten() {
-                    let candidate = entry.path().join(&jsonl_name);
-                    if candidate.exists() {
-                        return Some(candidate);
-                    }
-                }
-                None
-            });
-            match found {
-                Some(path) => {
-                    debug!("Direct match: pid={} -> session_id={} -> {:?}", process.pid, sid, path);
-                    resolved.push((process, path));
-                }
-                None => {
-                    warn!("Session ID {} from pid={} args not found on disk, falling back to cwd scan", sid, process.pid);
-                    unresolved.push(process);
-                }
+    // For each project directory
+    if let Ok(entries) = fs::read_dir(&claude_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
             }
-        } else {
-            unresolved.push(process);
-        }
-    }
 
-    debug!("Session matching: {} resolved by session_id, {} need cwd-based matching",
-           resolved.len(), unresolved.len());
+            let dir_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
 
-    // Handle directly resolved processes
-    for (process, jsonl_path) in &resolved {
-        let project_dir = jsonl_path.parent().unwrap_or(&claude_dir);
-        let project_path = extract_cwd_from_jsonl(jsonl_path)
-            .or_else(|| {
-                project_dir.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| convert_dir_name_to_path(n))
-            })
-            .unwrap_or_default();
-
-        if let Some(session) = find_session_for_process(jsonl_path, &project_dir.to_path_buf(), &project_path, process, agent_type.clone()) {
-            push_session_with_tracking(&mut sessions, session);
-        }
-    }
-
-    // Fall back to cwd-based matching for processes without a session_id in args.
-    // When only one process occupies a cwd, there's no ambiguity.
-    if !unresolved.is_empty() {
-        let mut cwd_to_processes: HashMap<String, Vec<&AgentProcess>> = HashMap::new();
-        for process in &unresolved {
-            if let Some(cwd) = &process.cwd {
-                cwd_to_processes.entry(cwd.to_string_lossy().to_string()).or_default().push(process);
-            } else {
-                warn!("Process pid={} has no cwd and no session_id, skipping", process.pid);
+            // Get all recent JSONL files and extract cwd from each.
+            // Multiple real paths can collide into the same encoded directory
+            // (e.g., agent-sessions and agent/sessions both encode to -...-agent-sessions)
+            // so we need to match each file's cwd to the process's cwd individually.
+            let jsonl_files = get_recently_active_jsonl_files(&path, 100);
+            if jsonl_files.is_empty() {
+                trace!("Project {} has no recent JSONL files, skipping", dir_name);
+                continue;
             }
-        }
 
-        if let Ok(entries) = fs::read_dir(&claude_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() { continue; }
+            // Build a map of cwd -> list of JSONL files with that cwd
+            let mut cwd_to_files: HashMap<String, Vec<PathBuf>> = HashMap::new();
+            for jsonl_file in &jsonl_files {
+                let file_cwd = extract_cwd_from_jsonl(jsonl_file)
+                    .unwrap_or_else(|| {
+                        // Fallback to decoded directory name if file has no cwd
+                        convert_dir_name_to_path(dir_name)
+                    });
+                cwd_to_files.entry(file_cwd).or_default().push(jsonl_file.clone());
+            }
 
-                let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let jsonl_files = get_recently_active_jsonl_files(&path, 100);
-                if jsonl_files.is_empty() { continue; }
+            debug!("Project {} has {} distinct cwds across {} files",
+                   dir_name, cwd_to_files.len(), jsonl_files.len());
 
-                let mut cwd_to_files: HashMap<String, Vec<PathBuf>> = HashMap::new();
-                for jsonl_file in &jsonl_files {
-                    let file_cwd = extract_cwd_from_jsonl(jsonl_file)
-                        .unwrap_or_else(|| convert_dir_name_to_path(dir_name));
-                    cwd_to_files.entry(file_cwd).or_default().push(jsonl_file.clone());
-                }
+            // For each unique cwd, find matching processes and create sessions
+            for (project_path, files_for_cwd) in &cwd_to_files {
+                let matching_processes = match cwd_to_processes.get(project_path) {
+                    Some(procs) => procs,
+                    None => continue,
+                };
 
-                for (project_path, files_for_cwd) in &cwd_to_files {
-                    let matching_processes = match cwd_to_processes.get(project_path) {
-                        Some(procs) => procs,
+                debug!("  cwd {} -> {} processes, {} files",
+                       project_path, matching_processes.len(), files_for_cwd.len());
+
+                // Match processes to JSONL files
+                for (index, process) in matching_processes.iter().enumerate() {
+                    debug!("Matching process pid={} to JSONL file index {}", process.pid, index);
+                    let jsonl_path = match files_for_cwd.get(index) {
+                        Some(p) => p,
                         None => continue,
                     };
-
-                    for (index, process) in matching_processes.iter().enumerate() {
-                        let jsonl_path = match files_for_cwd.get(index) {
-                            Some(path) => path,
-                            None => continue,
-                        };
-
-                        debug!("cwd fallback: pid={} -> index {} -> {:?}", process.pid, index, jsonl_path);
-                        if let Some(session) = find_session_for_process(jsonl_path, &path, project_path, process, agent_type.clone()) {
-                            push_session_with_tracking(&mut sessions, session);
-                        }
+                    if let Some(session) = find_session_for_process(jsonl_path, &path, project_path, process, agent_type.clone()) {
+                        push_session_with_tracking(&mut sessions, session);
+                    } else {
+                        warn!("Failed to create session for process pid={} in project {}", process.pid, project_path);
                     }
                 }
             }

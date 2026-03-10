@@ -126,7 +126,6 @@ fn find_opencode_processes() -> Vec<AgentProcess> {
                 pid: pid.as_u32(),
                 cpu_usage: cpu,
                 cwd,
-                session_id: None,
             });
         }
     }
