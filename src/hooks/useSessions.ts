@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Session, SessionsResponse, ItermLayoutResponse } from '../types/session';
 
-const POLL_INTERVAL = 2000; // 2 seconds
+const POLL_INTERVAL = 2000; // Fallback polling interval (ms)
 
 // Get ordering priority for card stability (only distinguishes active vs idle)
 // This prevents card reordering when status flips between thinking/processing/waiting
@@ -25,16 +27,12 @@ function mergeWithStableOrder(existing: Session[], incoming: Session[]): Session
     return incoming;
   }
 
-  // Create a map of existing positions by session ID
   const existingOrder = new Map<string, number>();
   existing.forEach((s, idx) => existingOrder.set(s.id, idx));
 
-  // Create a map of existing ordering priorities (coarse: active vs idle)
   const existingPriority = new Map<string, number>();
   existing.forEach(s => existingPriority.set(s.id, getOrderingPriority(s.status)));
 
-  // Check if any session changed ordering tier (only active <-> idle triggers reorder)
-  // Status changes within active states (thinking/processing/waiting) don't cause reordering
   let priorityChanged = false;
   for (const session of incoming) {
     const oldPriority = existingPriority.get(session.id);
@@ -45,19 +43,16 @@ function mergeWithStableOrder(existing: Session[], incoming: Session[]): Session
     }
   }
 
-  // Also check for new sessions
   const hasNewSessions = incoming.some(s => !existingOrder.has(s.id));
+  const hasRemovedSessions = existing.some(s => !incoming.find(i => i.id === s.id));
 
-  // If priority changed or new sessions appeared, use backend order
-  if (priorityChanged || hasNewSessions) {
+  if (priorityChanged || hasNewSessions || hasRemovedSessions) {
     return incoming;
   }
 
-  // Otherwise, preserve existing order but update session data
   const incomingMap = new Map<string, Session>();
   incoming.forEach(s => incomingMap.set(s.id, s));
 
-  // Keep existing order, update with new data
   const result: Session[] = [];
   for (const existingSession of existing) {
     const updated = incomingMap.get(existingSession.id);
@@ -67,7 +62,6 @@ function mergeWithStableOrder(existing: Session[], incoming: Session[]): Session
     }
   }
 
-  // Add any remaining new sessions at the end (shouldn't happen if hasNewSessions check works)
   for (const newSession of incomingMap.values()) {
     result.push(newSession);
   }
@@ -96,25 +90,26 @@ export function useSessions() {
     }
   }, []);
 
+  const applySessionsResponse = useCallback(async (response: SessionsResponse) => {
+    const stableSessions = mergeWithStableOrder(sessionsRef.current, response.sessions);
+    sessionsRef.current = stableSessions;
+    setSessions([...stableSessions]);
+    setTotalCount(response.totalCount);
+    setWaitingCount(response.waitingCount);
+    setError(null);
+    setIsLoading(false);
+    await updateTrayTitle(response.totalCount, response.waitingCount);
+  }, [updateTrayTitle]);
+
   const fetchSessions = useCallback(async () => {
     try {
       const response = await invoke<SessionsResponse>('get_all_sessions');
-      // Merge with stable ordering to prevent unnecessary reordering
-      const stableSessions = mergeWithStableOrder(sessionsRef.current, response.sessions);
-      sessionsRef.current = stableSessions;
-      setSessions([...stableSessions]);
-      setTotalCount(response.totalCount);
-      setWaitingCount(response.waitingCount);
-      setError(null);
-
-      // Update tray icon title with counts
-      await updateTrayTitle(response.totalCount, response.waitingCount);
+      await applySessionsResponse(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch sessions');
-    } finally {
       setIsLoading(false);
     }
-  }, [updateTrayTitle]);
+  }, [applySessionsResponse]);
 
   const focusSession = useCallback(async (session: Session) => {
     try {
@@ -132,11 +127,54 @@ export function useSessions() {
     fetchSessions();
   }, [fetchSessions]);
 
-  // Polling
+  // Subscribe to backend push events (primary update mechanism)
+  useEffect(() => {
+    const unlistenPromise = listen<SessionsResponse>('sessions-updated', (event) => {
+      applySessionsResponse(event.payload);
+    });
+
+    return () => {
+      unlistenPromise.then(fn => fn());
+    };
+  }, [applySessionsResponse]);
+
+  // Fallback polling in case events are missed
   useEffect(() => {
     const interval = setInterval(fetchSessions, POLL_INTERVAL);
     return () => clearInterval(interval);
   }, [fetchSessions]);
+
+  // Report visibility tier to backend for adaptive polling
+  useEffect(() => {
+    const reportVisibility = () => {
+      const tier = document.visibilityState === 'hidden'
+        ? 'background_hidden'
+        : 'foreground';
+      invoke('set_visibility_tier', { tier }).catch(() => {});
+    };
+
+    // Report on visibility change
+    document.addEventListener('visibilitychange', reportVisibility);
+
+    // Report on window focus/blur via Tauri API
+    let unlistenFocus: (() => void) | null = null;
+
+    const appWindow = getCurrentWindow();
+    appWindow.onFocusChanged(({ payload: focused }) => {
+      const tier = focused ? 'foreground' : 'background_visible';
+      invoke('set_visibility_tier', { tier }).catch(() => {});
+    }).then(unlisten => {
+      unlistenFocus = unlisten;
+    });
+
+    // Set initial state
+    reportVisibility();
+
+    return () => {
+      document.removeEventListener('visibilitychange', reportVisibility);
+      if (unlistenFocus) unlistenFocus();
+    };
+  }, []);
 
   // Fetch iTerm2 layout when grouping is enabled
   const fetchItermLayout = useCallback(async () => {
@@ -146,7 +184,6 @@ export function useSessions() {
       setLayoutError(null);
     } catch (err) {
       console.error('Failed to fetch iTerm2 layout:', err);
-      // Extract actual error message from Tauri error object
       const errorMsg = typeof err === 'string' ? err :
         (err instanceof Error ? err.message : JSON.stringify(err));
       setLayoutError(errorMsg || 'Failed to fetch iTerm2 layout');
@@ -157,7 +194,6 @@ export function useSessions() {
   useEffect(() => {
     if (groupByWindow) {
       fetchItermLayout();
-      // Poll layout at same interval as sessions
       const interval = setInterval(fetchItermLayout, POLL_INTERVAL);
       return () => clearInterval(interval);
     } else {

@@ -1,8 +1,7 @@
 use log::{debug, trace, warn};
 use serde::{Deserialize, Serialize};
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+use sysinfo::System;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 /// Represents a running Claude Code process
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -13,28 +12,22 @@ pub struct ClaudeProcess {
     pub memory: u64,
 }
 
-// Reuse System instance to avoid expensive re-initialization
-static SYSTEM: Mutex<Option<System>> = Mutex::new(None);
-
 /// Check if a process is orphaned by examining its parent chain.
 /// A process is considered orphaned if its parent shell has been reparented
 /// to launchd/init (PID 1), indicating the original terminal was closed.
 ///
-/// Parent chain for healthy sessions: claude → shell → terminal_emulator
-/// Parent chain for orphaned sessions: claude → shell (PPID=1) → launchd
+/// Parent chain for healthy sessions: claude -> shell -> terminal_emulator
+/// Parent chain for orphaned sessions: claude -> shell (PPID=1) -> launchd
 pub fn is_orphaned_process(system: &System, process: &sysinfo::Process) -> bool {
     let parent_pid = match process.parent() {
         Some(pid) => pid,
-        None => return true, // No parent at all - definitely orphaned
+        None => return true,
     };
 
-    // If parent is PID 1 directly, process is orphaned
     if parent_pid.as_u32() == 1 {
         return true;
     }
 
-    // Check grandparent - if parent's parent is PID 1, terminal was closed
-    // and the parent shell was reparented to launchd/init
     if let Some(parent_process) = system.process(parent_pid) {
         if let Some(grandparent_pid) = parent_process.parent() {
             if grandparent_pid.as_u32() == 1 {
@@ -42,47 +35,19 @@ pub fn is_orphaned_process(system: &System, process: &sysinfo::Process) -> bool 
             }
         }
     } else {
-        // Parent process doesn't exist in the system - orphaned
         return true;
     }
 
     false
 }
 
-/// Find all running Claude Code processes on the system
-/// Filters out sub-agent processes (whose parent is also a Claude process)
-/// and orphaned processes (whose terminal has been closed)
-pub fn find_claude_processes() -> Vec<ClaudeProcess> {
+/// Extract Claude processes from a pre-refreshed System instance.
+/// Filters out sub-agent processes and orphaned processes.
+pub fn find_claude_processes_in(system: &System) -> Vec<ClaudeProcess> {
     use std::collections::HashSet;
     use sysinfo::Pid;
 
-    debug!("=== Starting process discovery ===");
-
-    let mut system_guard = SYSTEM.lock().unwrap();
-
-    // Initialize system if not already done
-    let system = system_guard.get_or_insert_with(|| {
-        debug!("Initializing new System instance");
-        System::new_with_specifics(
-            RefreshKind::new().with_processes(
-                ProcessRefreshKind::new()
-                    .with_cmd(sysinfo::UpdateKind::Always)
-                    .with_cwd(sysinfo::UpdateKind::Always)
-                    .with_cpu()
-                    .with_memory()
-            )
-        )
-    });
-
-    // Refresh process list with full details for new processes
-    system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::All,
-        ProcessRefreshKind::new()
-            .with_cmd(sysinfo::UpdateKind::Always)
-            .with_cwd(sysinfo::UpdateKind::Always)
-            .with_cpu()
-            .with_memory()
-    );
+    debug!("=== Starting Claude process discovery ===");
 
     let total_processes = system.processes().len();
     trace!("Total system processes: {}", total_processes);
@@ -116,7 +81,6 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
             false
         };
 
-        // Exclude our own app
         let is_our_app = process_name.contains("claude-sessions")
             || process_name.contains("tauri-temp")
             || process_name.contains("agent-sessions");
@@ -125,11 +89,14 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
             let cwd = process.cwd().map(|p| p.to_path_buf());
 
             if is_our_app {
-                trace!("Skipping our own app: pid={}, name={}", pid.as_u32(), process_name);
+                trace!(
+                    "Skipping our own app: pid={}, name={}",
+                    pid.as_u32(),
+                    process_name
+                );
                 continue;
             }
 
-            // Check if parent is also a Claude process (indicates sub-agent)
             if let Some(parent_pid) = process.parent() {
                 if claude_pids.contains(&parent_pid) {
                     debug!(
@@ -142,9 +109,9 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
                 }
 
                 // Check if parent is Zed's external agent (claude-code-acp)
-                // These are auto-spawned by Zed and not user-initiated terminal sessions
                 if let Some(parent_process) = system.process(parent_pid) {
-                    let parent_cmd: String = parent_process.cmd()
+                    let parent_cmd: String = parent_process
+                        .cmd()
                         .iter()
                         .map(|s| s.to_string_lossy())
                         .collect::<Vec<_>>()
@@ -161,10 +128,9 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
                 }
             }
 
-            // Check if process is orphaned (terminal was closed)
             if is_orphaned_process(system, process) {
                 warn!(
-                    "Skipping orphaned process: pid={}, cwd={:?}, cpu={:.1}% (parent shell reparented to launchd)",
+                    "Skipping orphaned process: pid={}, cwd={:?}, cpu={:.1}%",
                     pid.as_u32(),
                     cwd,
                     process.cpu_usage()
@@ -189,6 +155,9 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
         }
     }
 
-    debug!("Process discovery complete: found {} Claude processes (excluding sub-agents and orphans)", processes.len());
+    debug!(
+        "Claude process discovery complete: found {} processes",
+        processes.len()
+    );
     processes
 }

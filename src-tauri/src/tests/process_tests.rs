@@ -1,6 +1,27 @@
-use crate::process::{find_claude_processes, is_orphaned_process, ClaudeProcess};
+use crate::process::{find_claude_processes_in, is_orphaned_process, ClaudeProcess};
 use std::path::PathBuf;
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind};
+
+fn make_refreshed_system() -> System {
+    let mut system = System::new_with_specifics(
+        RefreshKind::new().with_processes(
+            ProcessRefreshKind::new()
+                .with_cmd(UpdateKind::Always)
+                .with_cwd(UpdateKind::Always)
+                .with_cpu()
+                .with_memory(),
+        ),
+    );
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_cpu()
+            .with_memory(),
+    );
+    system
+}
 
 #[test]
 fn test_claude_process_creation() {
@@ -65,36 +86,22 @@ fn test_claude_process_serialization() {
 
 #[test]
 fn test_find_claude_processes_returns_vec() {
-    // This test just ensures the function runs without panicking
-    // In a real environment, it may or may not find Claude processes
-    let processes = find_claude_processes();
-    // Should return a Vec (possibly empty) - just verify we got a result
+    let system = make_refreshed_system();
+    let processes = find_claude_processes_in(&system);
     let _ = processes.len();
 }
 
 #[test]
 fn test_find_claude_processes_excludes_orphans() {
-    // Run process discovery and verify no orphaned processes are returned
-    // An orphaned process has its parent shell reparented to PID 1 (launchd)
-    let system = System::new_with_specifics(
-        RefreshKind::new().with_processes(
-            ProcessRefreshKind::new()
-                .with_cmd(sysinfo::UpdateKind::Always)
-                .with_cwd(sysinfo::UpdateKind::Always)
-                .with_cpu()
-                .with_memory()
-        )
-    );
+    let system = make_refreshed_system();
+    let processes = find_claude_processes_in(&system);
 
-    let processes = find_claude_processes();
-
-    // Verify that every returned process is NOT orphaned
     for cp in &processes {
         let pid = sysinfo::Pid::from_u32(cp.pid);
         if let Some(process) = system.process(pid) {
             assert!(
                 !is_orphaned_process(&system, process),
-                "Process pid={} should not be orphaned but was returned by find_claude_processes",
+                "Process pid={} should not be orphaned but was returned by find_claude_processes_in",
                 cp.pid
             );
         }
@@ -103,26 +110,10 @@ fn test_find_claude_processes_excludes_orphans() {
 
 #[test]
 fn test_is_orphaned_process_with_current_process() {
-    // The current test process should NOT be orphaned since it's running in a terminal
-    let mut system = System::new_with_specifics(
-        RefreshKind::new().with_processes(
-            ProcessRefreshKind::new()
-                .with_cmd(sysinfo::UpdateKind::Always)
-                .with_cwd(sysinfo::UpdateKind::Always)
-                .with_cpu()
-        )
-    );
-    system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::All,
-        ProcessRefreshKind::new()
-            .with_cmd(sysinfo::UpdateKind::Always)
-            .with_cwd(sysinfo::UpdateKind::Always)
-            .with_cpu()
-    );
+    let system = make_refreshed_system();
 
     let current_pid = sysinfo::Pid::from_u32(std::process::id());
     if let Some(process) = system.process(current_pid) {
-        // The test runner process should not be orphaned
         assert!(
             !is_orphaned_process(&system, process),
             "Current test process should not be detected as orphaned"
@@ -132,27 +123,10 @@ fn test_is_orphaned_process_with_current_process() {
 
 #[test]
 fn test_is_orphaned_process_with_launchd() {
-    // PID 1 (launchd) itself should not cause panics
-    let mut system = System::new_with_specifics(
-        RefreshKind::new().with_processes(
-            ProcessRefreshKind::new()
-                .with_cmd(sysinfo::UpdateKind::Always)
-                .with_cwd(sysinfo::UpdateKind::Always)
-                .with_cpu()
-        )
-    );
-    system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::All,
-        ProcessRefreshKind::new()
-            .with_cmd(sysinfo::UpdateKind::Always)
-            .with_cwd(sysinfo::UpdateKind::Always)
-            .with_cpu()
-    );
+    let system = make_refreshed_system();
 
-    // launchd (PID 1) has no parent or parent is 0 - test shouldn't panic
     let pid1 = sysinfo::Pid::from_u32(1);
     if let Some(process) = system.process(pid1) {
-        // Just verify the function doesn't panic
         let _ = is_orphaned_process(&system, process);
     }
 }

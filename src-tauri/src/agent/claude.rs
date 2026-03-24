@@ -1,7 +1,8 @@
 use super::{AgentDetector, AgentProcess};
-use crate::process::find_claude_processes;
-use crate::session::{AgentType, Session};
+use crate::process::claude::find_claude_processes_in;
 use crate::session::parser::get_sessions_internal;
+use crate::session::{AgentType, Session};
+use sysinfo::System;
 
 pub struct ClaudeDetector;
 
@@ -14,8 +15,8 @@ impl AgentDetector for ClaudeDetector {
         AgentType::Claude
     }
 
-    fn find_processes(&self) -> Vec<AgentProcess> {
-        find_claude_processes()
+    fn find_processes(&self, system: &System) -> Vec<AgentProcess> {
+        find_claude_processes_in(system)
             .into_iter()
             .map(|p| AgentProcess {
                 pid: p.pid,
