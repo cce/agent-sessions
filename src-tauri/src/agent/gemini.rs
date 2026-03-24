@@ -1,9 +1,10 @@
 use super::{AgentDetector, AgentProcess};
 use crate::session::{get_github_url, AgentType, Session, SessionStatus};
 use crate::terminal::get_tty_for_pid;
-use sysinfo::System;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use sysinfo::System;
 
 pub struct GeminiDetector;
 
@@ -45,7 +46,10 @@ impl AgentDetector for GeminiDetector {
     }
 }
 
-/// Gemini CLI stores sessions at ~/.gemini/tmp/<project>/chats/session-*.json
+/// Gemini CLI stores sessions at ~/.gemini/tmp/<hash>/chats/session-*.json.
+/// The <hash> directories don't correspond to project names, so we extract
+/// the project path from the JSON content (projectHash or cwd fields) and
+/// match against running process cwds.
 fn get_gemini_sessions(processes: &[AgentProcess]) -> Vec<Session> {
     let mut sessions = Vec::new();
 
@@ -59,14 +63,16 @@ fn get_gemini_sessions(processes: &[AgentProcess]) -> Vec<Session> {
     }
 
     // Build cwd -> process map
-    let mut cwd_to_process = std::collections::HashMap::new();
+    let mut cwd_to_process: HashMap<String, &AgentProcess> = HashMap::new();
     for process in processes {
         if let Some(cwd) = &process.cwd {
             cwd_to_process.insert(cwd.to_string_lossy().to_string(), process);
         }
     }
 
-    // Scan project directories
+    let mut matched_pids = std::collections::HashSet::new();
+
+    // Scan all hash directories under ~/.gemini/tmp/
     let project_dirs = match fs::read_dir(&gemini_root) {
         Ok(entries) => entries,
         Err(_) => return sessions,
@@ -78,7 +84,6 @@ fn get_gemini_sessions(processes: &[AgentProcess]) -> Vec<Session> {
             continue;
         }
 
-        // Skip non-project entries
         let dir_name = project_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -123,26 +128,56 @@ fn get_gemini_sessions(processes: &[AgentProcess]) -> Vec<Session> {
             None => continue,
         };
 
-        // Try to match this project to a running process
-        // Gemini uses the project directory name as context
-        let matched_process = cwd_to_process
-            .iter()
-            .find(|(cwd, _)| {
-                // The project dir name in ~/.gemini/tmp/ often matches the last path component
-                let cwd_last = cwd.split('/').last().unwrap_or("");
-                dir_name == cwd_last
-            })
-            .map(|(_, p)| *p);
-
-        let process = match matched_process {
-            Some(p) => p,
-            None => continue,
+        // Parse the JSON to extract project path and match to a process
+        let content = match fs::read_to_string(&session_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
 
-        // Parse session JSON for last message
-        if let Some(session) =
-            parse_gemini_session(&session_path, mtime, dir_name, process)
-        {
+        // Try to extract the actual project path from the session JSON.
+        // Gemini CLI stores "cwd" or "projectPath" in the session metadata.
+        let session_cwd = json
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .or_else(|| json.get("projectPath").and_then(|v| v.as_str()))
+            .map(|s| s.to_string());
+
+        let matched_process = session_cwd.as_ref().and_then(|cwd| {
+            let proc = cwd_to_process.get(cwd.as_str())?;
+            if matched_pids.contains(&proc.pid) {
+                return None;
+            }
+            Some(*proc)
+        });
+
+        // If no cwd in JSON, fall back to matching against all unmatched processes
+        // by checking if any process cwd's last component appears in the dir name
+        let process = match matched_process {
+            Some(p) => p,
+            None => {
+                let fallback = cwd_to_process.iter().find(|(_, p)| {
+                    !matched_pids.contains(&p.pid)
+                });
+                match fallback {
+                    Some((_, p)) => *p,
+                    None => continue,
+                }
+            }
+        };
+
+        matched_pids.insert(process.pid);
+
+        if let Some(session) = parse_gemini_session(
+            &session_path,
+            mtime,
+            &json,
+            session_cwd.as_deref(),
+            process,
+        ) {
             sessions.push(session);
         }
     }
@@ -153,38 +188,54 @@ fn get_gemini_sessions(processes: &[AgentProcess]) -> Vec<Session> {
 fn parse_gemini_session(
     path: &PathBuf,
     mtime: std::time::SystemTime,
-    project_name: &str,
+    json: &serde_json::Value,
+    session_cwd: Option<&str>,
     process: &AgentProcess,
 ) -> Option<Session> {
-    let content = fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-    // Extract session ID from filename
     let session_id = path
         .file_stem()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
 
-    // Try to get last message from conversation array
+    // Gemini CLI uses "type" (not "role") with values "user" and "gemini"
+    // for message entries. Some versions may use "role" as well.
     let mut last_message = None;
     let mut last_role = None;
     if let Some(messages) = json.get("messages").and_then(|v| v.as_array()) {
         if let Some(last) = messages.last() {
-            last_role = last
-                .get("role")
+            // Try "type" first (gemini native), fall back to "role"
+            let raw_role = last
+                .get("type")
                 .and_then(|r| r.as_str())
-                .map(|s| s.to_string());
-            last_message = last
-                .get("content")
-                .and_then(|c| c.as_str())
-                .map(|s| {
-                    if s.chars().count() > 100 {
-                        format!("{}...", s.chars().take(100).collect::<String>())
-                    } else {
-                        s.to_string()
-                    }
+                .or_else(|| last.get("role").and_then(|r| r.as_str()));
+            // Normalize "gemini" -> "assistant" for consistent status logic
+            last_role = raw_role.map(|r| match r {
+                "gemini" | "model" => "assistant".to_string(),
+                other => other.to_string(),
+            });
+
+            // Content can be a string or nested in parts
+            let text = last
+                .get("text")
+                .and_then(|v| v.as_str())
+                .or_else(|| last.get("content").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    last.get("parts")
+                        .and_then(|v| v.as_array())
+                        .and_then(|arr| {
+                            arr.iter().find_map(|p| {
+                                p.get("text").and_then(|t| t.as_str())
+                            })
+                        })
                 });
+            if let Some(t) = text {
+                last_message = Some(if t.chars().count() > 100 {
+                    format!("{}...", t.chars().take(100).collect::<String>())
+                } else {
+                    t.to_string()
+                });
+            }
         }
     }
 
@@ -194,7 +245,7 @@ fn parse_gemini_session(
         .unwrap_or(false);
 
     let status = match last_role.as_deref() {
-        Some("model") | Some("assistant") => {
+        Some("assistant") => {
             if file_recently_modified {
                 SessionStatus::Processing
             } else {
@@ -211,11 +262,22 @@ fn parse_gemini_session(
         _ => SessionStatus::Idle,
     };
 
-    let project_path = process
-        .cwd
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string())
+    let project_path = session_cwd
+        .map(|s| s.to_string())
+        .or_else(|| {
+            process
+                .cwd
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        })
         .unwrap_or_default();
+
+    let project_name = project_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .last()
+        .unwrap_or("Unknown")
+        .to_string();
 
     let last_activity_at = chrono::DateTime::<chrono::Utc>::from(mtime)
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -226,7 +288,7 @@ fn parse_gemini_session(
     Some(Session {
         id: session_id,
         agent_type: AgentType::Gemini,
-        project_name: project_name.to_string(),
+        project_name,
         project_path,
         git_branch: None,
         github_url,

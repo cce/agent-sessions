@@ -11,19 +11,18 @@ use crate::terminal::ItermLayoutResponse;
 // Store current shortcut for unregistration
 static CURRENT_SHORTCUT: Mutex<Option<Shortcut>> = Mutex::new(None);
 
-/// Get all active sessions. Returns cached results from the discovery manager
-/// on subsequent calls; the first call may return empty while the background
-/// loop initializes.
+/// Get all active sessions. Returns cached results from the discovery manager.
+/// Only falls back to a synchronous scan if the background loop hasn't
+/// completed its first pass yet.
 #[tauri::command]
 pub fn get_all_sessions(app: tauri::AppHandle) -> SessionsResponse {
     let manager = app.state::<Arc<DiscoveryManager>>();
-    let cached = manager.cached_sessions();
-    // If cache is empty, this might be the initial call before the background
-    // loop has run. Do a synchronous scan as fallback.
-    if cached.sessions.is_empty() {
-        crate::agent::get_all_sessions()
+    if manager.has_completed_initial_scan() {
+        manager.cached_sessions()
     } else {
-        cached
+        // Background loop hasn't finished its first scan yet.
+        // Do a one-time synchronous scan so the UI isn't empty at launch.
+        crate::agent::get_all_sessions()
     }
 }
 

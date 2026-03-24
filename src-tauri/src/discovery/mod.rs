@@ -49,6 +49,9 @@ pub struct DiscoveryManager {
     visibility: std::sync::Mutex<VisibilityTier>,
     wake_signal: Arc<Notify>,
     watcher_active: AtomicBool,
+    /// Set to true after the background loop completes its first scan.
+    /// Used to distinguish "not yet scanned" from "scanned but found nothing".
+    has_completed_initial_scan: AtomicBool,
 }
 
 impl DiscoveryManager {
@@ -62,11 +65,16 @@ impl DiscoveryManager {
             visibility: std::sync::Mutex::new(VisibilityTier::Foreground),
             wake_signal: Arc::new(Notify::new()),
             watcher_active: AtomicBool::new(false),
+            has_completed_initial_scan: AtomicBool::new(false),
         })
     }
 
     pub fn cached_sessions(&self) -> SessionsResponse {
         self.cached_response.lock().unwrap().clone()
+    }
+
+    pub fn has_completed_initial_scan(&self) -> bool {
+        self.has_completed_initial_scan.load(Ordering::Relaxed)
     }
 
     pub fn set_visibility(&self, tier: VisibilityTier) {
@@ -132,6 +140,7 @@ impl DiscoveryManager {
 
                 // Update cache
                 *manager.cached_response.lock().unwrap() = response.clone();
+                manager.has_completed_initial_scan.store(true, Ordering::Relaxed);
 
                 // Push to frontend
                 let _ = app.emit("sessions-updated", &response);

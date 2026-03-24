@@ -46,14 +46,18 @@ const CodexIcon = ({ className }: { className?: string }) => (
 );
 
 // Agent icon - Claude always orange (brand color), Codex green (OpenAI), OpenCode uses status color
-const AgentStatusIcon = ({ type, statusColor }: { type: 'claude' | 'opencode' | 'codex', statusColor: string }) => {
+// New agent types fall back to a generic terminal icon with the status color.
+const AgentStatusIcon = ({ type, statusColor }: { type: string, statusColor: string }) => {
   if (type === 'claude') {
-    // Claude brand color: coral/orange #D77655
     return <ClaudeIcon className="w-4 h-4 fill-[#D77655]" />;
   }
   if (type === 'codex') {
     return <CodexIcon className="w-4 h-4 text-foreground" />;
   }
+  if (type === 'opencode') {
+    return <OpenCodeIcon className={`w-4 h-4 ${statusColor}`} />;
+  }
+  // Gemini, Copilot, Droid, OpenClaw -- use a generic icon with status color
   return <OpenCodeIcon className={`w-4 h-4 ${statusColor}`} />;
 };
 

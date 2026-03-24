@@ -43,7 +43,7 @@ impl SessionWatcher {
             None => return,
         };
 
-        let dirs = [
+        let mut dirs = vec![
             home.join(".claude").join("projects"),
             home.join(".codex").join("sessions"),
             home.join(".local")
@@ -52,9 +52,20 @@ impl SessionWatcher {
                 .join("storage"),
             home.join(".gemini").join("tmp"),
             home.join(".copilot").join("session-state"),
+            // Droid/Factory: both sessions and projects directories
             home.join(".factory").join("sessions"),
+            home.join(".factory").join("projects"),
+            // OpenClaw: primary and legacy locations
             home.join(".openclaw").join("agents"),
+            home.join(".clawdbot"),
         ];
+
+        // OpenClaw also supports OPENCLAW_STATE_DIR
+        if let Ok(state_dir) = std::env::var("OPENCLAW_STATE_DIR") {
+            if !state_dir.is_empty() {
+                dirs.push(std::path::PathBuf::from(state_dir));
+            }
+        }
 
         for dir in &dirs {
             if dir.exists() {

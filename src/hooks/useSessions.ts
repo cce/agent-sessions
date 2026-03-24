@@ -4,7 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Session, SessionsResponse, ItermLayoutResponse } from '../types/session';
 
-const POLL_INTERVAL = 2000; // Fallback polling interval (ms)
+// Used for iTerm2 layout polling when window grouping is enabled
+const ITERM_LAYOUT_POLL_INTERVAL = 2000;
 
 // Get ordering priority for card stability (only distinguishes active vs idle)
 // This prevents card reordering when status flips between thinking/processing/waiting
@@ -138,11 +139,9 @@ export function useSessions() {
     };
   }, [applySessionsResponse]);
 
-  // Fallback polling in case events are missed
-  useEffect(() => {
-    const interval = setInterval(fetchSessions, POLL_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchSessions]);
+  // No fallback polling -- the backend DiscoveryManager pushes via events
+  // and handles its own adaptive polling. The only pull is the initial fetch
+  // above. If the event channel ever breaks, the user can hit refresh.
 
   // Report visibility tier to backend for adaptive polling
   useEffect(() => {
@@ -194,7 +193,7 @@ export function useSessions() {
   useEffect(() => {
     if (groupByWindow) {
       fetchItermLayout();
-      const interval = setInterval(fetchItermLayout, POLL_INTERVAL);
+      const interval = setInterval(fetchItermLayout, ITERM_LAYOUT_POLL_INTERVAL);
       return () => clearInterval(interval);
     } else {
       setItermLayout(null);
