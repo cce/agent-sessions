@@ -18,7 +18,8 @@ pub mod iterm2_proto {
 }
 
 use iterm2_proto::*;
-use iterm2_proto::split_tree_link;
+use iterm2_proto::split_tree_node::SplitTreeLink;
+use iterm2_proto::split_tree_node::split_tree_link;
 use iterm2_proto::variable_request;
 
 /// Request an authentication cookie from iTerm2 via AppleScript
@@ -185,6 +186,7 @@ async fn query_session_tty(
             VariableRequest {
                 scope: Some(variable_request::Scope::SessionId(session_id.to_string())),
                 get: vec!["tty".to_string()],
+                set: vec![],
             },
         )),
     };
@@ -300,8 +302,8 @@ pub async fn get_iterm_layout() -> Result<ItermLayoutResponse, String> {
                 _ => return Err("Expected ListSessionsResponse after notification".to_string()),
             }
         }
-        Some(server_originated_message::Submessage::VariableResponse(_)) => {
-            return Err("Unexpected VariableResponse".to_string());
+        Some(other) => {
+            return Err(format!("Unexpected response: {:?}", other));
         }
         None => return Err("Empty response from iTerm2".to_string()),
     };
@@ -384,6 +386,177 @@ pub async fn get_iterm_layout() -> Result<ItermLayoutResponse, String> {
         windows,
         session_to_window,
     })
+}
+
+/// Helper to send a protobuf request and decode the response
+async fn send_request(
+    ws: &mut WebSocketStream<UnixStream>,
+    msg: ClientOriginatedMessage,
+) -> Result<ServerOriginatedMessage, String> {
+    let mut buf = Vec::new();
+    msg.encode(&mut buf)
+        .map_err(|e| format!("Failed to encode request: {}", e))?;
+    ws.send(tungstenite::Message::Binary(buf.into()))
+        .await
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+
+    loop {
+        let response = ws
+            .next()
+            .await
+            .ok_or_else(|| "No response from iTerm2".to_string())?
+            .map_err(|e| format!("Failed to receive response: {}", e))?;
+
+        let data = match response {
+            tungstenite::Message::Binary(d) => d,
+            _ => continue,
+        };
+
+        let server_msg = ServerOriginatedMessage::decode(data.as_ref())
+            .map_err(|e| format!("Failed to decode response: {}", e))?;
+
+        // Skip notifications, wait for the actual response
+        if matches!(
+            server_msg.submessage,
+            Some(server_originated_message::Submessage::Notification(_))
+        ) {
+            continue;
+        }
+        return Ok(server_msg);
+    }
+}
+
+/// Create a new tab. If window_id is None, creates a new window.
+/// Returns (window_id, tab_id, session_id).
+pub async fn create_tab(
+    ws: &mut WebSocketStream<UnixStream>,
+    request_id: i64,
+    window_id: Option<&str>,
+    initial_directory: Option<&str>,
+    tab_title: Option<&str>,
+) -> Result<(String, String, String), String> {
+    let mut props = Vec::new();
+    if let Some(dir) = initial_directory {
+        props.push(ProfileProperty {
+            key: Some("Initial Directory".to_string()),
+            json_value: Some(format!("\"{}\"", dir)),
+        });
+        // Tell iTerm2 to use the custom directory instead of home
+        props.push(ProfileProperty {
+            key: Some("Custom Directory".to_string()),
+            json_value: Some("\"Yes\"".to_string()),
+        });
+    }
+    if let Some(title) = tab_title {
+        props.push(ProfileProperty {
+            key: Some("Name".to_string()),
+            json_value: Some(format!("\"{}\"", title)),
+        });
+    }
+
+    let request = ClientOriginatedMessage {
+        id: Some(request_id),
+        submessage: Some(client_originated_message::Submessage::CreateTabRequest(
+            CreateTabRequest {
+                profile_name: None,
+                window_id: window_id.map(|s| s.to_string()),
+                tab_index: None,
+                command: None,
+                custom_profile_properties: props,
+            },
+        )),
+    };
+
+    let server_msg = send_request(ws, request).await?;
+    match server_msg.submessage {
+        Some(server_originated_message::Submessage::CreateTabResponse(resp)) => {
+            let status = resp.status();
+            if status != create_tab_response::Status::Ok {
+                return Err(format!("CreateTab failed: {:?}", status));
+            }
+            Ok((
+                resp.window_id.unwrap_or_default(),
+                resp.tab_id.unwrap_or_default().to_string(),
+                resp.session_id.unwrap_or_default(),
+            ))
+        }
+        _ => Err("Unexpected response to CreateTab".to_string()),
+    }
+}
+
+/// Send text (keystrokes) to a session
+pub async fn send_text(
+    ws: &mut WebSocketStream<UnixStream>,
+    request_id: i64,
+    session_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    let request = ClientOriginatedMessage {
+        id: Some(request_id),
+        submessage: Some(client_originated_message::Submessage::SendTextRequest(
+            SendTextRequest {
+                session: Some(session_id.to_string()),
+                text: Some(text.to_string()),
+                suppress_broadcast: Some(true),
+            },
+        )),
+    };
+
+    let server_msg = send_request(ws, request).await?;
+    match server_msg.submessage {
+        Some(server_originated_message::Submessage::SendTextResponse(resp)) => {
+            let status = resp.status();
+            if status != send_text_response::Status::Ok {
+                return Err(format!("SendText failed: {:?}", status));
+            }
+            Ok(())
+        }
+        _ => Err("Unexpected response to SendText".to_string()),
+    }
+}
+
+/// Set the tab title (badge) for a session
+pub async fn set_session_name(
+    ws: &mut WebSocketStream<UnixStream>,
+    request_id: i64,
+    session_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let request = ClientOriginatedMessage {
+        id: Some(request_id),
+        submessage: Some(
+            client_originated_message::Submessage::SetProfilePropertyRequest(
+                SetProfilePropertyRequest {
+                    target: Some(set_profile_property_request::Target::Session(
+                        session_id.to_string(),
+                    )),
+                    key: None,
+                    json_value: None,
+                    assignments: vec![set_profile_property_request::Assignment {
+                        key: Some("Name".to_string()),
+                        json_value: Some(format!("\"{}\"", name)),
+                    }],
+                },
+            ),
+        ),
+    };
+
+    let server_msg = send_request(ws, request).await?;
+    match server_msg.submessage {
+        Some(server_originated_message::Submessage::SetProfilePropertyResponse(resp)) => {
+            let status = resp.status();
+            if status != set_profile_property_response::Status::Ok {
+                return Err(format!("SetProfileProperty failed: {:?}", status));
+            }
+            Ok(())
+        }
+        _ => Err("Unexpected response to SetProfileProperty".to_string()),
+    }
+}
+
+/// Connect to iTerm2 and return an open WebSocket (public for use by restore)
+pub async fn connect() -> Result<WebSocketStream<UnixStream>, String> {
+    connect_to_iterm().await
 }
 
 #[cfg(test)]

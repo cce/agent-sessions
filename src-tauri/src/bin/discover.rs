@@ -1,34 +1,88 @@
-//! Standalone test harness that runs the session discovery pipeline
-//! without the Tauri UI. Useful for verifying detection on a live machine.
+//! Standalone tool for session discovery.
 //!
-//! Usage: cargo run --bin discover [--watch]
+//! Usage:
+//!   discover                  -- list active sessions
+//!   discover --watch          -- poll every 3s
+//!   discover --json [FILE]    -- output sessions as JSONL
 
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
 use tauri_temp_lib::agent;
 use tauri_temp_lib::discovery::delta::{DeltaTracker, FileStat};
-use std::path::PathBuf;
+use tauri_temp_lib::terminal;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
 
-    let watch_mode = std::env::args().any(|a| a == "--watch");
+    let args: Vec<String> = std::env::args().collect();
+    let watch_mode = args.iter().any(|a| a == "--watch");
+    let json_mode = args.iter().any(|a| a == "--json");
+    let json_file = args
+        .iter()
+        .position(|a| a == "--json")
+        .and_then(|i| args.get(i + 1))
+        .filter(|a| !a.starts_with("--"))
+        .cloned();
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
     if watch_mode {
         println!("=== Watch mode: polling every 3s (Ctrl-C to stop) ===\n");
         let mut delta = DeltaTracker::new();
         loop {
-            run_discovery(&mut Some(&mut delta));
+            run_discovery(&rt, false, None, &mut Some(&mut delta));
             std::thread::sleep(std::time::Duration::from_secs(3));
             println!("\n--- refresh ---\n");
         }
     } else {
-        run_discovery(&mut None);
+        run_discovery(&rt, json_mode, json_file.as_deref(), &mut None);
     }
 }
 
-fn run_discovery(delta: &mut Option<&mut DeltaTracker>) {
+fn get_tty_to_window(rt: &tokio::runtime::Runtime) -> HashMap<String, String> {
+    match rt.block_on(terminal::get_iterm_layout()) {
+        Ok(layout) => layout.session_to_window,
+        Err(e) => {
+            eprintln!("iTerm2 layout unavailable: {}", e);
+            HashMap::new()
+        }
+    }
+}
+
+fn run_discovery(
+    rt: &tokio::runtime::Runtime,
+    json_mode: bool,
+    json_file: Option<&str>,
+    delta: &mut Option<&mut DeltaTracker>,
+) {
     let response = agent::get_all_sessions();
+    let tty_to_window = get_tty_to_window(rt);
+
+    if json_mode {
+        let mut out: Box<dyn Write> = match json_file {
+            Some(path) => {
+                let f = std::fs::File::create(path)
+                    .unwrap_or_else(|e| panic!("failed to create {}: {}", path, e));
+                Box::new(std::io::BufWriter::new(f))
+            }
+            None => Box::new(std::io::stdout().lock()),
+        };
+        for session in &response.sessions {
+            let window_id = session.tty.as_ref().and_then(|t| tty_to_window.get(t));
+            let mut obj: serde_json::Value = serde_json::to_value(session).unwrap();
+            if let Some(wid) = window_id {
+                obj["windowId"] = serde_json::Value::String(wid.clone());
+            }
+            writeln!(out, "{}", serde_json::to_string(&obj).unwrap()).unwrap();
+        }
+        if let Some(path) = json_file {
+            eprintln!("Wrote {} sessions to {}", response.sessions.len(), path);
+        }
+        return;
+    }
 
     println!(
         "Found {} sessions ({} waiting)\n",
@@ -40,8 +94,17 @@ fn run_discovery(delta: &mut Option<&mut DeltaTracker>) {
             "  [{:?}] {} ({:?})",
             session.agent_type, session.project_name, session.status
         );
+        println!("    id: {}", session.id);
         println!("    path: {}", session.project_path);
-        println!("    pid: {}, cpu: {:.1}%, tty: {:?}", session.pid, session.cpu_usage, session.tty);
+        println!(
+            "    pid: {}, cpu: {:.1}%, tty: {:?}",
+            session.pid, session.cpu_usage, session.tty
+        );
+        if let Some(tty) = &session.tty {
+            if let Some(window_id) = tty_to_window.get(tty) {
+                println!("    window: {}", window_id);
+            }
+        }
         if let Some(branch) = &session.git_branch {
             println!("    branch: {}", branch);
         }
@@ -61,7 +124,6 @@ fn run_discovery(delta: &mut Option<&mut DeltaTracker>) {
         println!();
     }
 
-    // If delta tracker is provided, show file change stats
     if let Some(tracker) = delta {
         let home = dirs::home_dir().unwrap();
         let claude_dir = home.join(".claude").join("projects");
