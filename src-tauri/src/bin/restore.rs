@@ -612,7 +612,7 @@ fn format_age(iso_ts: &str) -> String {
 
 fn resume_command(session: &BackupSession) -> String {
     match session.agent_type.as_str() {
-        "codex" => format!("codex --resume {}", session.id),
+        "codex" => format!("codex resume {}", session.id),
         _ => format!("claude --resume {}", session.id),
     }
 }
@@ -974,7 +974,7 @@ fn do_restore(rt: &tokio::runtime::Runtime, app: &App) {
             let sessions = &by_group[gi];
             println!("  Window: {}", group.label);
             for s in sessions {
-                println!("    cd {} && {}", s.project_path, resume_command(s));
+                println!("    cd {:?} && {}", s.project_path, resume_command(s));
             }
         }
         return;
@@ -1031,7 +1031,11 @@ fn do_restore(rt: &tokio::runtime::Runtime, app: &App) {
                     window_id = Some(wid);
                 }
 
-                let cmd = format!("{}\n", resume_command(s));
+                // Explicitly cd into the project dir rather than relying on
+                // iTerm2's "Initial Directory" profile override, which doesn't
+                // reliably take effect and otherwise leaves the agent launching
+                // from $HOME (prompting to trust the home directory).
+                let cmd = format!("cd {:?} && {}\n", s.project_path, resume_command(s));
                 if let Err(e) =
                     terminal::send_text(&mut ws, req_id, &iterm_session_id, &cmd).await
                 {
