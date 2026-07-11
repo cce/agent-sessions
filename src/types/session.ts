@@ -1,6 +1,6 @@
 export type SessionStatus = 'waiting' | 'processing' | 'thinking' | 'compacting' | 'idle';
 
-export type AgentType = 'claude' | 'opencode' | 'codex';
+export type AgentType = 'claude' | 'opencode' | 'codex' | 'gemini' | 'copilot' | 'droid' | 'openclaw';
 
 export interface Session {
   id: string;
@@ -18,6 +18,15 @@ export interface Session {
   activeSubagentCount: number;
   tty: string | null;
 }
+
+export type DisplayItemKey = 'pid' | 'tty' | 'cpu' | 'time';
+
+export interface DisplayItem {
+  key: DisplayItemKey;
+  enabled: boolean;
+}
+
+export type DisplaySettings = DisplayItem[];
 
 export interface SessionsResponse {
   sessions: Session[];

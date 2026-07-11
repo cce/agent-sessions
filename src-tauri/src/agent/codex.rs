@@ -1,5 +1,5 @@
 use super::{AgentDetector, AgentProcess};
-use crate::process::find_codex_processes;
+use crate::process::codex::find_codex_processes_in;
 use crate::session::{get_github_url, AgentType, Session, SessionStatus};
 use crate::terminal::get_tty_for_pid;
 use serde::Deserialize;
@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Command;
+use sysinfo::System;
 
 pub struct CodexDetector;
 
@@ -20,8 +21,8 @@ impl AgentDetector for CodexDetector {
         AgentType::Codex
     }
 
-    fn find_processes(&self) -> Vec<AgentProcess> {
-        find_codex_processes()
+    fn find_processes(&self, system: &System) -> Vec<AgentProcess> {
+        find_codex_processes_in(system)
             .into_iter()
             .map(|p| AgentProcess {
                 pid: p.pid,

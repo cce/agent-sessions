@@ -7,6 +7,10 @@ pub enum AgentType {
     Claude,
     OpenCode,
     Codex,
+    Gemini,
+    Copilot,
+    Droid,
+    OpenClaw,
 }
 
 /// Represents a Claude Code session

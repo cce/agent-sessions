@@ -1,12 +1,53 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { SessionGrid } from './components/SessionGrid';
 import { Settings, useHotkeyInit } from './components/Settings';
 import { useSessions } from './hooks/useSessions';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { DisplaySettings, DisplayItemKey } from './types/session';
+
+const DISPLAY_SETTINGS_KEY = 'agent-sessions-display-settings';
+const DEFAULT_DISPLAY: DisplaySettings = [
+  { key: 'pid', enabled: false },
+  { key: 'tty', enabled: true },
+  { key: 'cpu', enabled: true },
+  { key: 'time', enabled: true },
+];
+
+const ALL_KEYS: DisplayItemKey[] = ['pid', 'tty', 'cpu', 'time'];
+
+function loadDisplaySettings(): DisplaySettings {
+  try {
+    const stored = localStorage.getItem(DISPLAY_SETTINGS_KEY);
+    if (!stored) return DEFAULT_DISPLAY;
+    const raw = JSON.parse(stored);
+    if (!Array.isArray(raw)) return DEFAULT_DISPLAY;
+    const validKeys = new Set<string>(ALL_KEYS);
+    const parsed: DisplaySettings = raw.filter(
+      (item): item is DisplaySettings[number] =>
+        item && typeof item.key === 'string' && validKeys.has(item.key) && typeof item.enabled === 'boolean'
+    );
+    // Ensure all keys are present (handles upgrades when new items are added)
+    const existing = new Set(parsed.map((item) => item.key));
+    for (const key of ALL_KEYS) {
+      if (!existing.has(key)) {
+        const def = DEFAULT_DISPLAY.find((d) => d.key === key)!;
+        parsed.push(def);
+      }
+    }
+    return parsed;
+  } catch {
+    return DEFAULT_DISPLAY;
+  }
+}
 
 function App() {
   const [showSettings, setShowSettings] = useState(false);
+  const [displaySettings, setDisplaySettings] = useState<DisplaySettings>(loadDisplaySettings);
+
+  useEffect(() => {
+    localStorage.setItem(DISPLAY_SETTINGS_KEY, JSON.stringify(displaySettings));
+  }, [displaySettings]);
   const {
     sessions,
     totalCount,
@@ -93,7 +134,12 @@ function App() {
       </header>
 
       {/* Settings Modal */}
-      <Settings isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      <Settings
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        displaySettings={displaySettings}
+        onDisplaySettingsChange={setDisplaySettings}
+      />
 
       {/* iTerm2 layout error banner */}
       {groupByWindow && layoutError && (
@@ -132,6 +178,7 @@ function App() {
             onSessionClick={focusSession}
             groupByWindow={groupByWindow}
             itermLayout={itermLayout}
+            displaySettings={displaySettings}
           />
         )}
       </main>

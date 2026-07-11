@@ -6,7 +6,9 @@ mod tmux;
 
 use applescript::execute_applescript;
 
-pub use iterm_api::{get_iterm_layout, ItermLayoutResponse};
+pub use iterm_api::{
+    connect, create_tab, get_iterm_layout, send_text, set_session_name, ItermLayoutResponse,
+};
 
 /// Focus the terminal containing the Claude process with the given PID
 pub fn focus_terminal_for_pid(pid: u32) -> Result<(), String> {

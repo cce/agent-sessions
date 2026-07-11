@@ -1,4 +1,4 @@
-import { Session, ItermLayoutResponse } from '../types/session';
+import { Session, ItermLayoutResponse, DisplaySettings } from '../types/session';
 import { SessionCard } from './SessionCard';
 
 interface SessionGridProps {
@@ -6,6 +6,7 @@ interface SessionGridProps {
   onSessionClick: (session: Session) => void;
   groupByWindow?: boolean;
   itermLayout?: ItermLayoutResponse | null;
+  displaySettings: DisplaySettings;
 }
 
 interface WindowGroup {
@@ -50,7 +51,7 @@ function groupSessionsByWindow(
   return result;
 }
 
-export function SessionGrid({ sessions, onSessionClick, groupByWindow, itermLayout }: SessionGridProps) {
+export function SessionGrid({ sessions, onSessionClick, groupByWindow, itermLayout, displaySettings }: SessionGridProps) {
   if (groupByWindow && itermLayout) {
     const grouped = groupSessionsByWindow(sessions, itermLayout);
 
@@ -71,6 +72,7 @@ export function SessionGrid({ sessions, onSessionClick, groupByWindow, itermLayo
                   <SessionCard
                     session={session}
                     onClick={() => onSessionClick(session)}
+                    displaySettings={displaySettings}
                   />
                 </div>
               ))}
@@ -89,6 +91,7 @@ export function SessionGrid({ sessions, onSessionClick, groupByWindow, itermLayo
           key={`${session.id}-${session.pid}`}
           session={session}
           onClick={() => onSessionClick(session)}
+          displaySettings={displaySettings}
         />
       ))}
     </div>

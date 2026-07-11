@@ -1,7 +1,7 @@
 use log::{debug, info, trace, warn};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -216,6 +216,29 @@ pub fn get_sessions() -> SessionsResponse {
     crate::agent::get_all_sessions()
 }
 
+fn push_session_with_tracking(sessions: &mut Vec<Session>, session: Session) {
+    let mut prev_status_map = PREVIOUS_STATUS.lock().unwrap();
+    let prev_status = prev_status_map.get(&session.id).cloned();
+
+    if let Some(prev) = &prev_status {
+        if *prev != session.status {
+            warn!(
+                "STATUS TRANSITION: project={}, {:?} -> {:?}, cpu={:.1}%, last_msg_role={:?}",
+                session.project_name, prev, session.status, session.cpu_usage, session.last_message_role
+            );
+        }
+    }
+
+    prev_status_map.insert(session.id.clone(), session.status.clone());
+    drop(prev_status_map);
+
+    info!(
+        "Session created: id={}, project={}, status={:?}, pid={}, cpu={:.1}%",
+        session.id, session.project_name, session.status, session.pid, session.cpu_usage
+    );
+    sessions.push(session);
+}
+
 /// Internal function to get sessions for a specific agent type
 /// Called by agent detectors (ClaudeDetector, OpenCodeDetector, etc.)
 pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) -> Vec<Session> {
@@ -297,34 +320,16 @@ pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) 
                 // Match processes to JSONL files
                 for (index, process) in matching_processes.iter().enumerate() {
                     debug!("Matching process pid={} to JSONL file index {}", process.pid, index);
-                    if let Some(session) = find_session_for_process(files_for_cwd, &path, project_path, process, index, agent_type.clone()) {
-                    // Track status transitions
-                    let mut prev_status_map = PREVIOUS_STATUS.lock().unwrap();
-                    let prev_status = prev_status_map.get(&session.id).cloned();
-
-                    // Log status transition if it changed
-                    if let Some(prev) = &prev_status {
-                        if *prev != session.status {
-                            warn!(
-                                "STATUS TRANSITION: project={}, {:?} -> {:?}, cpu={:.1}%, file_age=?, last_msg_role={:?}",
-                                session.project_name, prev, session.status, session.cpu_usage, session.last_message_role
-                            );
-                        }
+                    let jsonl_path = match files_for_cwd.get(index) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if let Some(session) = find_session_for_process(jsonl_path, &path, project_path, process, agent_type.clone()) {
+                        push_session_with_tracking(&mut sessions, session);
+                    } else {
+                        warn!("Failed to create session for process pid={} in project {}", process.pid, project_path);
                     }
-
-                    // Update stored status
-                    prev_status_map.insert(session.id.clone(), session.status.clone());
-                    drop(prev_status_map);
-
-                    info!(
-                        "Session created: id={}, project={}, status={:?}, pid={}, cpu={:.1}%",
-                        session.id, session.project_name, session.status, session.pid, session.cpu_usage
-                    );
-                    sessions.push(session);
-                } else {
-                    warn!("Failed to create session for process pid={} in project {}", process.pid, project_path);
                 }
-            }
             }
         }
     }
@@ -424,16 +429,16 @@ fn get_recently_active_jsonl_files(project_dir: &PathBuf, _expected_count: usize
         .collect()
 }
 
-/// Find a session for a specific process from available JSONL files
+
+
+/// Find a session for a specific process from a known JSONL file
 fn find_session_for_process(
-    jsonl_files: &[PathBuf],
+    jsonl_path: &PathBuf,
     project_dir: &PathBuf,
     project_path: &str,
     process: &AgentProcess,
-    index: usize,
     agent_type: AgentType,
 ) -> Option<Session> {
-    let jsonl_path = jsonl_files.get(index)?;
     let mut session = parse_session_file(jsonl_path, project_path, process.pid, process.cpu_usage, agent_type)?;
 
     // Count active subagents for this session
@@ -472,7 +477,8 @@ pub fn parse_session_file(
 
     // Parse the JSONL file to get session info
     let file = File::open(jsonl_path).ok()?;
-    let reader = BufReader::new(file);
+    let file_size = file.metadata().ok()?.len();
+    let mut reader = BufReader::new(file);
 
     let mut session_id = None;
     let mut git_branch = None;
@@ -487,13 +493,28 @@ pub fn parse_session_file(
     let mut found_status_info = false;
     let mut is_compacting = false;
 
-    // Read last N lines for efficiency
-    // Must be large enough to cover long stretches of progress entries during tool execution
-    // (observed up to 275 consecutive non-content lines in real sessions)
-    let lines: Vec<_> = reader.lines().flatten().collect();
-    let recent_lines: Vec<_> = lines.iter().rev().take(500).collect();
+    // Read last ~128KB of file instead of the whole thing.
+    // Must be large enough to cover long stretches of progress entries
+    // (observed up to 275 consecutive non-content lines in real sessions).
+    let tail_size: u64 = 131072;
+    let start_pos = if file_size > tail_size {
+        file_size - tail_size
+    } else {
+        0
+    };
 
-    trace!("File has {} total lines, checking last {}", lines.len(), recent_lines.len());
+    if start_pos > 0 {
+        let _ = reader.seek(SeekFrom::Start(start_pos));
+        // Skip partial first line after seeking into middle of file
+        let mut partial = String::new();
+        let _ = reader.read_line(&mut partial);
+    }
+
+    let tail_lines: Vec<String> = reader.lines().flatten().collect();
+    let recent_lines: Vec<&String> = tail_lines.iter().rev().take(500).collect();
+
+    trace!("File size {}KB, tail from offset {}, checking {} lines",
+           file_size / 1024, start_pos, recent_lines.len());
 
     for line in &recent_lines {
         if let Ok(msg) = serde_json::from_str::<JsonlMessage>(line) {
@@ -583,9 +604,30 @@ pub fn parse_session_file(
         }
     }
 
+    // If we seeked into the middle and didn't find session_id/git_branch in the tail,
+    // read the first few lines of the file where these fields typically appear.
+    if (session_id.is_none() || git_branch.is_none()) && start_pos > 0 {
+        if let Ok(head_file) = File::open(jsonl_path) {
+            let head_reader = BufReader::new(head_file);
+            for line in head_reader.lines().take(20).flatten() {
+                if let Ok(msg) = serde_json::from_str::<JsonlMessage>(&line) {
+                    if session_id.is_none() {
+                        session_id = msg.session_id;
+                    }
+                    if git_branch.is_none() {
+                        git_branch = msg.git_branch;
+                    }
+                    if session_id.is_some() && git_branch.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     let session_id = session_id?;
 
-    // Determine status based on message content — no file age or CPU heuristics
+    // Determine status based on message content
     let status = if is_compacting {
         SessionStatus::Compacting
     } else {
